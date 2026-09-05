@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ayushverma21-dev/Student-api/internal/config"
+	"github.com/ayushverma21-dev/Student-api/internal/types"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -92,6 +93,23 @@ func (storage *Postgres) CreateStudent(name string, email string, age int) (int6
 	}
 
 	return id, nil
+}
+
+func (storage *Postgres) GetStudentById(id int64) (types.Student, error) {
+	var student types.Student
+	err := storage.DB.QueryRow(
+		context.Background(),
+		`SELECT id, name, email, age FROM public.students WHERE id = $1`,
+		id,
+	).Scan(&student.Id, &student.Name, &student.Email, &student.Age)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return types.Student{}, fmt.Errorf("no student found with id %d", id)
+		}
+		return types.Student{}, fmt.Errorf("query student: %w", err)
+	}
+
+	return student, nil
 }
 
 func (storage *Postgres) Close() {
