@@ -113,6 +113,30 @@ func Update(store storage.Storage) http.HandlerFunc {
 	}
 }
 
+func Delete(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(err))
+			return
+		}
+
+		if err := store.DeleteStudent(id); err != nil {
+			if errors.Is(err, storage.ErrStudentNotFound) {
+				slog.Warn("student not found for deletion", slog.Int64("id", id))
+				response.WriteJson(w, http.StatusNotFound, response.GeneralError(err))
+				return
+			}
+			slog.Error("failed to delete student", slog.Int64("id", id), slog.String("error", err.Error()))
+			response.WriteJson(w, http.StatusInternalServerError, response.GeneralError(err))
+			return
+		}
+
+		slog.Info("student deleted successfully", slog.Int64("id", id))
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func GetList(storage storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Info("getting all students")

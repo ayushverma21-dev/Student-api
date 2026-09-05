@@ -132,6 +132,22 @@ func (db *Postgres) UpdateStudent(id int64, name string, email string, age int) 
 	return nil
 }
 
+func (db *Postgres) DeleteStudent(id int64) error {
+	result, err := db.DB.Exec(
+		context.Background(),
+		`DELETE FROM public.students WHERE id = $1`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("delete student: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("student %d: %w", id, storage.ErrStudentNotFound)
+	}
+
+	return nil
+}
+
 func (storage *Postgres) Close() {
 	storage.DB.Close(context.Background())
 }
