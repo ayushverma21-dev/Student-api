@@ -76,6 +76,43 @@ func GetById(storage storage.Storage) http.HandlerFunc {
 	}
 }
 
+func Update(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(err))
+			return
+		}
+
+		var student types.Student
+		if err := json.NewDecoder(r.Body).Decode(&student); err != nil {
+			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(err))
+			return
+		}
+
+		if err := validator.New().Struct(student); err != nil {
+			validateErrs := err.(validator.ValidationErrors)
+			response.WriteJson(w, http.StatusBadRequest, response.ValidationError(validateErrs))
+			return
+		}
+
+		if err := store.UpdateStudent(id, student.Name, student.Email, student.Age); err != nil {
+			if errors.Is(err, storage.ErrStudentNotFound) {
+				slog.Warn("student not found for update", slog.Int64("id", id))
+				response.WriteJson(w, http.StatusNotFound, response.GeneralError(err))
+				return
+			}
+			slog.Error("failed to update student", slog.Int64("id", id), slog.String("error", err.Error()))
+			response.WriteJson(w, http.StatusInternalServerError, response.GeneralError(err))
+			return
+		}
+
+		student.Id = id
+		slog.Info("student updated successfully", slog.Int64("id", id))
+		response.WriteJson(w, http.StatusOK, student)
+	}
+}
+
 func GetList(storage storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Info("getting all students")

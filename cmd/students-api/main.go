@@ -24,13 +24,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	slog.Info("storage initialized", slog.String("env",cfg.Env),slog.String("version","1.0.0"))
+	slog.Info("storage initialized", slog.String("env", cfg.Env), slog.String("version", "1.0.0"))
 	//setup router
 	router := http.NewServeMux()
 
-
 	router.HandleFunc("POST /api/students", student.New(storage))
-	router.HandleFunc("GET /api/students/{id}",student.GetById(storage))
+	router.HandleFunc("PUT /api/students/{id}", student.Update(storage))
+	router.HandleFunc("GET /api/students/{id}", student.GetById(storage))
 	router.HandleFunc("GET /api/students", student.GetList(storage))
 
 	//setup server

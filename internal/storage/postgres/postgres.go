@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ayushverma21-dev/Student-api/internal/config"
+	"github.com/ayushverma21-dev/Student-api/internal/storage"
 	"github.com/ayushverma21-dev/Student-api/internal/types"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -110,6 +111,25 @@ func (storage *Postgres) GetStudentById(id int64) (types.Student, error) {
 	}
 
 	return student, nil
+}
+
+func (db *Postgres) UpdateStudent(id int64, name string, email string, age int) error {
+	result, err := db.DB.Exec(
+		context.Background(),
+		`UPDATE public.students SET name = $1, email = $2, age = $3 WHERE id = $4`,
+		name,
+		email,
+		age,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("update student: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("student %d: %w", id, storage.ErrStudentNotFound)
+	}
+
+	return nil
 }
 
 func (storage *Postgres) Close() {
