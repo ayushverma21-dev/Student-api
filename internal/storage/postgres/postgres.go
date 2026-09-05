@@ -115,3 +115,28 @@ func (storage *Postgres) GetStudentById(id int64) (types.Student, error) {
 func (storage *Postgres) Close() {
 	storage.DB.Close(context.Background())
 }
+
+func (storage *Postgres) GetStudents() ([]types.Student, error) {
+	rows, err := storage.DB.Query(
+		context.Background(),
+		`SELECT id, name, email, age FROM public.students ORDER BY id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query students: %w", err)
+	}
+	defer rows.Close()
+
+	var students []types.Student
+	for rows.Next() {
+		var student types.Student
+		if err := rows.Scan(&student.Id, &student.Name, &student.Email, &student.Age); err != nil {
+			return nil, fmt.Errorf("scan student: %w", err)
+		}
+		students = append(students, student)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate students: %w", err)
+	}
+
+	return students, nil
+}
