@@ -13,15 +13,29 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
+	postgresDriver "gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 type Postgres struct {
-	DB *pgx.Conn
+	DB *gorm.DB
+}
+
+type studentModel struct {
+	Id           int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	Name         string `gorm:"column:name;not null"`
+	Email        string `gorm:"column:email;not null"`
+	PasswordHash string `gorm:"column:password_hash;not null;default:''"`
+	Age          int    `gorm:"column:age;not null;check:age > 0"`
+}
+
+func (studentModel) TableName() string {
+	return "public.students"
 }
 
 func New(cfg *config.Config) (*Postgres, error) {
 	ctx := context.Background()
-	db, err := pgx.Connect(ctx, cfg.DatabaseURL)
+	connection, err := pgx.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) || pgErr.Code != "3D000" {
@@ -31,36 +45,22 @@ func New(cfg *config.Config) (*Postgres, error) {
 		if err := createDatabase(ctx, cfg.DatabaseURL); err != nil {
 			return nil, err
 		}
-		db, err = pgx.Connect(ctx, cfg.DatabaseURL)
+		connection, err = pgx.Connect(ctx, cfg.DatabaseURL)
 		if err != nil {
 			return nil, err
 		}
 	}
+	connection.Close(ctx)
 
-	if err := db.Ping(ctx); err != nil {
-		db.Close(ctx)
+	db, err := gorm.Open(postgresDriver.Open(cfg.DatabaseURL), &gorm.Config{})
+	if err != nil {
 		return nil, err
 	}
 
-	_, err = db.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS public.students (
-			id BIGSERIAL PRIMARY KEY,
-			name TEXT NOT NULL,
-			email TEXT NOT NULL,
-			password_hash TEXT NOT NULL DEFAULT '',
-			age INTEGER NOT NULL CHECK (age > 0)
-		)
-	`)
-	if err != nil {
-		db.Close(ctx)
+	if err := db.AutoMigrate(&studentModel{}); err != nil {
 		return nil, err
 	}
 	slog.Info("database table initialized", slog.String("table", "public.students"))
-	_, err = db.Exec(ctx, `ALTER TABLE public.students ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT ''`)
-	if err != nil {
-		db.Close(ctx)
-		return nil, err
-	}
 
 	return &Postgres{DB: db}, nil
 }
@@ -93,73 +93,59 @@ func (storage *Postgres) CreateStudent(name string, email string, password strin
 		return 0, fmt.Errorf("hash password: %w", err)
 	}
 
-	var id int64
-	err = storage.DB.QueryRow(
-		context.Background(),
-		`INSERT INTO public.students (name, email, password_hash, age) VALUES ($1, $2, $3, $4) RETURNING id`,
-		name,
-		email,
-		string(passwordHash),
-		age,
-	).Scan(&id)
+	student := studentModel{
+		Name:         name,
+		Email:        email,
+		PasswordHash: string(passwordHash),
+		Age:          age,
+	}
+	err = storage.DB.Create(&student).Error
 	if err != nil {
 		return 0, fmt.Errorf("create student: %w", err)
 	}
 
-	return id, nil
+	return student.Id, nil
 }
 
 func (db *Postgres) AuthenticateStudent(email string, password string) (types.Student, error) {
-	var student types.Student
-	var passwordHash string
-	err := db.DB.QueryRow(
-		context.Background(),
-		`SELECT id, name, email, password_hash, age FROM public.students WHERE email = $1`,
-		email,
-	).Scan(&student.Id, &student.Name, &student.Email, &passwordHash, &student.Age)
+	var model studentModel
+	err := db.DB.Where("email = ?", email).First(&model).Error
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return types.Student{}, storage.ErrInvalidCredentials
 		}
 		return types.Student{}, fmt.Errorf("find student for login: %w", err)
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(model.PasswordHash), []byte(password)); err != nil {
 		return types.Student{}, storage.ErrInvalidCredentials
 	}
-	return student, nil
+	return toStudent(model), nil
 }
 
 func (storage *Postgres) GetStudentById(id int64) (types.Student, error) {
-	var student types.Student
-	err := storage.DB.QueryRow(
-		context.Background(),
-		`SELECT id, name, email, age FROM public.students WHERE id = $1`,
-		id,
-	).Scan(&student.Id, &student.Name, &student.Email, &student.Age)
+	var model studentModel
+	err := storage.DB.First(&model, id).Error
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return types.Student{}, fmt.Errorf("no student found with id %d", id)
 		}
 		return types.Student{}, fmt.Errorf("query student: %w", err)
 	}
 
-	return student, nil
+	return toStudent(model), nil
 }
 
 func (db *Postgres) UpdateStudent(id int64, name string, email string, age int) error {
-	result, err := db.DB.Exec(
-		context.Background(),
-		`UPDATE public.students SET name = $1, email = $2, age = $3 WHERE id = $4`,
-		name,
-		email,
-		age,
-		id,
-	)
-	if err != nil {
-		return fmt.Errorf("update student: %w", err)
+	result := db.DB.Model(&studentModel{}).Where("id = ?", id).Updates(map[string]interface{}{
+		"name":  name,
+		"email": email,
+		"age":   age,
+	})
+	if result.Error != nil {
+		return fmt.Errorf("update student: %w", result.Error)
 	}
-	if result.RowsAffected() == 0 {
+	if result.RowsAffected == 0 {
 		return fmt.Errorf("student %d: %w", id, storage.ErrStudentNotFound)
 	}
 
@@ -167,15 +153,11 @@ func (db *Postgres) UpdateStudent(id int64, name string, email string, age int) 
 }
 
 func (db *Postgres) DeleteStudent(id int64) error {
-	result, err := db.DB.Exec(
-		context.Background(),
-		`DELETE FROM public.students WHERE id = $1`,
-		id,
-	)
-	if err != nil {
-		return fmt.Errorf("delete student: %w", err)
+	result := db.DB.Delete(&studentModel{}, id)
+	if result.Error != nil {
+		return fmt.Errorf("delete student: %w", result.Error)
 	}
-	if result.RowsAffected() == 0 {
+	if result.RowsAffected == 0 {
 		return fmt.Errorf("student %d: %w", id, storage.ErrStudentNotFound)
 	}
 
@@ -183,30 +165,30 @@ func (db *Postgres) DeleteStudent(id int64) error {
 }
 
 func (storage *Postgres) Close() {
-	storage.DB.Close(context.Background())
+	sqlDB, err := storage.DB.DB()
+	if err == nil {
+		_ = sqlDB.Close()
+	}
 }
 
 func (storage *Postgres) GetStudents() ([]types.Student, error) {
-	rows, err := storage.DB.Query(
-		context.Background(),
-		`SELECT id, name, email, age FROM public.students ORDER BY id`,
-	)
-	if err != nil {
+	var models []studentModel
+	if err := storage.DB.Order("id").Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("query students: %w", err)
 	}
-	defer rows.Close()
 
-	var students []types.Student
-	for rows.Next() {
-		var student types.Student
-		if err := rows.Scan(&student.Id, &student.Name, &student.Email, &student.Age); err != nil {
-			return nil, fmt.Errorf("scan student: %w", err)
-		}
-		students = append(students, student)
+	students := make([]types.Student, 0, len(models))
+	for _, model := range models {
+		students = append(students, toStudent(model))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate students: %w", err)
-	}
-
 	return students, nil
+}
+
+func toStudent(model studentModel) types.Student {
+	return types.Student{
+		Id:    model.Id,
+		Name:  model.Name,
+		Email: model.Email,
+		Age:   model.Age,
+	}
 }
