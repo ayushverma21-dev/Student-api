@@ -4,3 +4,7 @@ database_url: "postgres://postgres:123@localhost:5432/students?sslmode=disable"
 
 http_server:
   address: "localhost:8082"
+
+redis:
+  address: "localhost:6379"
+  db: 0

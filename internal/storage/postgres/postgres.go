@@ -12,6 +12,7 @@ import (
 	"github.com/ayushverma21-dev/Student-api/internal/types"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Postgres struct {
@@ -46,6 +47,7 @@ func New(cfg *config.Config) (*Postgres, error) {
 			id BIGSERIAL PRIMARY KEY,
 			name TEXT NOT NULL,
 			email TEXT NOT NULL,
+			password_hash TEXT NOT NULL DEFAULT '',
 			age INTEGER NOT NULL CHECK (age > 0)
 		)
 	`)
@@ -54,6 +56,11 @@ func New(cfg *config.Config) (*Postgres, error) {
 		return nil, err
 	}
 	slog.Info("database table initialized", slog.String("table", "public.students"))
+	_, err = db.Exec(ctx, `ALTER TABLE public.students ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT ''`)
+	if err != nil {
+		db.Close(ctx)
+		return nil, err
+	}
 
 	return &Postgres{DB: db}, nil
 }
@@ -80,13 +87,19 @@ func quoteIdentifier(identifier string) string {
 	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
 }
 
-func (storage *Postgres) CreateStudent(name string, email string, age int) (int64, error) {
+func (storage *Postgres) CreateStudent(name string, email string, password string, age int) (int64, error) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return 0, fmt.Errorf("hash password: %w", err)
+	}
+
 	var id int64
-	err := storage.DB.QueryRow(
+	err = storage.DB.QueryRow(
 		context.Background(),
-		`INSERT INTO public.students (name, email, age) VALUES ($1, $2, $3) RETURNING id`,
+		`INSERT INTO public.students (name, email, password_hash, age) VALUES ($1, $2, $3, $4) RETURNING id`,
 		name,
 		email,
+		string(passwordHash),
 		age,
 	).Scan(&id)
 	if err != nil {
@@ -94,6 +107,27 @@ func (storage *Postgres) CreateStudent(name string, email string, age int) (int6
 	}
 
 	return id, nil
+}
+
+func (db *Postgres) AuthenticateStudent(email string, password string) (types.Student, error) {
+	var student types.Student
+	var passwordHash string
+	err := db.DB.QueryRow(
+		context.Background(),
+		`SELECT id, name, email, password_hash, age FROM public.students WHERE email = $1`,
+		email,
+	).Scan(&student.Id, &student.Name, &student.Email, &passwordHash, &student.Age)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return types.Student{}, storage.ErrInvalidCredentials
+		}
+		return types.Student{}, fmt.Errorf("find student for login: %w", err)
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+		return types.Student{}, storage.ErrInvalidCredentials
+	}
+	return student, nil
 }
 
 func (storage *Postgres) GetStudentById(id int64) (types.Student, error) {

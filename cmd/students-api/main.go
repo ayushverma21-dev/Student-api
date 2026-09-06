@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/ayushverma21-dev/Student-api/internal/config"
+	"github.com/ayushverma21-dev/Student-api/internal/http/handler/auth"
 	"github.com/ayushverma21-dev/Student-api/internal/http/handler/student"
+	redisstore "github.com/ayushverma21-dev/Student-api/internal/redis"
 	"github.com/ayushverma21-dev/Student-api/internal/storage/postgres"
 )
 
@@ -24,10 +26,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	sessions, err := redisstore.New(cfg.Redis)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer sessions.Close()
 	slog.Info("storage initialized", slog.String("env", cfg.Env), slog.String("version", "1.0.0"))
 	//setup router
 	router := http.NewServeMux()
 
+	router.HandleFunc("POST /api/login", auth.Login(storage, sessions))
 	router.HandleFunc("POST /api/students", student.New(storage))
 	router.HandleFunc("PUT /api/students/{id}", student.Update(storage))
 	router.HandleFunc("DELETE /api/students/{id}", student.Delete(storage))
